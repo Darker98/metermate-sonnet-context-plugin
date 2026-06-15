@@ -1,4 +1,4 @@
-import { Client, Environment, OauthScope } from 'slack-apimatic-sdk';
+import { Client, Environment } from 'slack-apimatic-sdk';
 import { config } from './config';
 
 let _client: Client | null = null;
@@ -10,17 +10,10 @@ export function getSlackClient(): Client {
         oauthClientId: config.slack.oauthClientId,
         oauthClientSecret: config.slack.oauthClientSecret,
         oauthRedirectUri: config.slack.oauthRedirectUri,
-        oauthScopes: [
-          OauthScope.Channelswrite,
-          OauthScope.Groupswrite,
-          OauthScope.Imwrite,
-          OauthScope.Mpimwrite,
-          OauthScope.Chatwritebot,
-          OauthScope.UsersreadEmail,
-          OauthScope.Usersread,
-          OauthScope.Groupsread,
-          OauthScope.Channelsread,
-        ],
+        oauthToken: {
+          accessToken: config.slack.botToken,
+          tokenType: 'bearer',
+        },
       },
       timeout: 30_000,
       environment: Environment.Production,

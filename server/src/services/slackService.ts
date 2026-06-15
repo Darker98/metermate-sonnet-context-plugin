@@ -1,4 +1,5 @@
 import {
+  AuthApi,
   ChatApi,
   ConversationsApi,
   UsersApi,
@@ -206,11 +207,28 @@ export const slackService = {
 
   async checkHealth(): Promise<boolean> {
     const token = getBotToken();
-    const usersApi = new UsersApi(getSlackClient());
+    const authApi = new AuthApi(getSlackClient());
     try {
-      await usersApi.usersList(token, 1);
-      return true;
-    } catch {
+      const response = await authApi.authTest(token);
+      return response.statusCode === 200;
+    } catch (err) {
+      // The SDK has a schema bug: Slack returns ok as boolean but SDK expects string.
+      // If status 200 and body contains ok:true, the token is valid — treat as healthy.
+      const e = err as Record<string, unknown>;
+      if (e['statusCode'] === 200) {
+        const body = e['body'] as string | undefined;
+        if (body) {
+          try {
+            const parsed = JSON.parse(body) as Record<string, unknown>;
+            if (parsed['ok'] === true) return true;
+          } catch { /* fall through */ }
+        }
+      }
+      if (err instanceof ApiError) {
+        console.error('[slack health] ApiError', err.statusCode, err.body);
+      } else {
+        console.error('[slack health] error', (err as Error).message ?? err);
+      }
       return false;
     }
   },
