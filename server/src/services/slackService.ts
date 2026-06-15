@@ -8,7 +8,7 @@ import {
 import { getSlackClient, getBotToken } from '../slackClient';
 import { transactionStore } from '../stores/transactionStore';
 import { Transaction } from '../types';
-import { SubscriptionResult } from './maxioService';
+import { SubscriptionResult, UsageResult } from './maxioService';
 
 export interface TxnChannelResult {
   channelId: string;
@@ -244,6 +244,8 @@ export const slackService = {
 
   buildUC1ProgressBlocks,
   buildUC1CompletionBlocks,
+  buildUC2ProgressBlocks,
+  buildUC2CompletionBlocks,
   buildFailureBlocks,
 };
 
@@ -317,6 +319,37 @@ export function buildUC1CompletionBlocks(result: SubscriptionResult): Record<str
           style: 'primary',
         },
       ],
+    },
+  ];
+}
+
+export function buildUC2ProgressBlocks(componentHandle: string, quantity: number): Record<string, unknown>[] {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `:bar_chart: *Recording usage…*\nComponent: \`${componentHandle}\` · Quantity: *${quantity}*` },
+    },
+  ];
+}
+
+export function buildUC2CompletionBlocks(result: UsageResult): Record<string, unknown>[] {
+  return [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: ':white_check_mark: Usage recorded', emoji: true },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Component:*\n\`${result.componentHandle}\`` },
+        { type: 'mrkdwn', text: `*This report:*\n${result.quantity}` },
+        { type: 'mrkdwn', text: `*Period total:*\n${result.periodTotalQuantity}` },
+        { type: 'mrkdwn', text: `*Memo:*\n${result.memo ?? '—'}` },
+      ],
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: 'Accrues to next invoice.' }],
     },
   ];
 }

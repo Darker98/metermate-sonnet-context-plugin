@@ -119,14 +119,16 @@ async function ensureMeteredComponent(
 ): Promise<void> {
   const ctl = new ComponentsController(client);
 
+  // Use listing instead of readComponent — avoids SDK URL-encoding issue with handle: prefix
   try {
-    const existing = await ctl.readComponent(familyId, `handle:${handle}`);
-    if (existing.result?.component?.id) {
-      console.log(`  [skip] Component "${name}" already exists`);
+    const listResp = await ctl.listComponentsForProductFamily({ productFamilyId: familyId, perPage: 200 });
+    const existing = (listResp.result ?? []).find((r) => r.component?.handle === handle);
+    if (existing?.component?.id) {
+      console.log(`  [skip] Component "${name}" already exists (id=${existing.component.id})`);
       return;
     }
-  } catch {
-    // 404 → doesn't exist, create it
+  } catch (err) {
+    console.warn(`  [warn] Could not list components to check existence: ${extractErr(err)}`);
   }
 
   try {
@@ -143,7 +145,8 @@ async function ensureMeteredComponent(
     console.log(`  [created] Component "${name}" ($${unitPrice}/${unitName})`);
   } catch (err) {
     if (isTaken(err)) {
-      console.log(`  [skip] Component "${name}" handle already taken`);
+      // Handle exists in another family — log the actual error body for diagnosis
+      console.warn(`  [warn] Component "${name}" handle taken (in another family?): ${extractErr(err)}`);
       return;
     }
     throw new Error(`Failed to create component "${name}": ${extractErr(err)}`);
@@ -153,16 +156,19 @@ async function ensureMeteredComponent(
 async function main() {
   console.log(`\nSeeding Maxio site: ${site}\n`);
 
+  // metermate-consulting is the canonical family — basic/pro products already live there.
   console.log('→ Product family');
-  const familyId = await ensureProductFamily('metermate', 'MeterMate');
+  const familyId = await ensureProductFamily('metermate-consulting', 'MeterMate Consulting');
 
   console.log('\n→ Products');
-  await ensureProduct('metermate', 'basic', 'Basic', BigInt(9900), 'Basic consulting plan — $99/mo');
-  await ensureProduct('metermate', 'pro', 'Pro', BigInt(29900), 'Pro consulting plan — $299/mo');
+  await ensureProduct('metermate-consulting', 'basic', 'Basic', BigInt(9900), 'Basic consulting plan — $99/mo');
+  await ensureProduct('metermate-consulting', 'pro', 'Pro', BigInt(29900), 'Pro consulting plan — $299/mo');
 
   console.log('\n→ Metered components');
-  await ensureMeteredComponent(familyId, 'consulting-minutes', 'Consulting Minutes', 'minute', '2.00');
-  await ensureMeteredComponent(familyId, 'api-calls', 'API Calls', 'call', '0.01');
+  // Handles must be unique site-wide. Earlier runs left archived handles in the wrong family,
+  // so we use fresh handles scoped with "mm-" prefix in the correct family.
+  await ensureMeteredComponent(familyId, 'mm-consulting-mins', 'Consulting Minutes', 'minute', '2.00');
+  await ensureMeteredComponent(familyId, 'mm-api-calls', 'API Calls', 'call', '0.01');
 
   console.log('\nDone. Your Maxio site is ready for MeterMate.\n');
 }
