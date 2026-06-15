@@ -38,13 +38,18 @@ metaRouter.get('/products', async (_req, res) => {
       id: p.product?.id,
       handle: p.product?.handle,
       name: p.product?.name,
-      priceInCents: p.product?.priceInCents,
+      priceInCents: p.product?.priceInCents !== undefined ? Number(p.product.priceInCents) : undefined,
       interval: p.product?.interval,
       intervalUnit: p.product?.intervalUnit,
     }));
     res.json({ products });
   } catch (err) {
-    console.error('[meta] /products error:', err);
-    res.status(502).json({ status: 'maxio_failed', error: 'Could not fetch products' });
+    const detail = err instanceof Error
+      ? err.message
+      : typeof (err as Record<string, unknown>)?.['body'] === 'string'
+        ? (err as Record<string, unknown>)['body']
+        : String(err);
+    console.error('[meta] /products error:', detail);
+    res.status(502).json({ status: 'maxio_failed', error: `Could not fetch products: ${detail}` });
   }
 });

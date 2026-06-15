@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import BookForm from './BookForm';
 
 type Role = 'client' | 'admin';
 
@@ -47,11 +48,7 @@ export default function App() {
 
       <main>
         {role === 'client' ? (
-          <div>
-            <p style={{ color: '#6b7280' }}>
-              Client forms will appear here as each use case is implemented.
-            </p>
-          </div>
+          <BookForm />
         ) : (
           <div>
             <p style={{ color: '#6b7280' }}>
