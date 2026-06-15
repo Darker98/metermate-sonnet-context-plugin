@@ -8,12 +8,29 @@ import {
 import { getSlackClient, getBotToken } from '../slackClient';
 import { transactionStore } from '../stores/transactionStore';
 import { Transaction } from '../types';
+import { SubscriptionResult } from './maxioService';
 
 export interface TxnChannelResult {
   channelId: string;
   channelName: string;
   clientInvited: boolean;
   consultantInvited: boolean;
+}
+
+// The slack-apimatic-sdk has a schema bug: Slack returns `ok` as boolean
+// but the SDK schema expects a string. This helper extracts the parsed body
+// from any error (ApiError or ResponseValidationError) and checks for ok:true.
+function isSlackSuccessBody(err: unknown): { ok: boolean; body: Record<string, unknown> | null } {
+  const e = err as Record<string, unknown>;
+  const statusCode = e['statusCode'];
+  const rawBody = e['body'] as string | undefined;
+  if (statusCode === 200 && rawBody) {
+    try {
+      const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+      return { ok: parsed['ok'] === true, body: parsed };
+    } catch { /* fall through */ }
+  }
+  return { ok: false, body: null };
 }
 
 function sanitizeChannelSegment(s: string): string {
@@ -25,10 +42,11 @@ function sanitizeChannelSegment(s: string): string {
     .slice(0, 20);
 }
 
-function buildChannelName(consultantId: string, clientEmail: string, seq: number): string {
+function buildChannelName(consultantId: string, clientEmail: string, txnId: string): string {
   const consultantSlug = sanitizeChannelSegment(consultantId);
   const clientSlug = sanitizeChannelSegment(clientEmail.split('@')[0]);
-  const name = `txn-${consultantSlug}-${clientSlug}-${seq.toString().padStart(3, '0')}`;
+  const shortId = txnId.replace('txn_', '').slice(0, 8);
+  const name = `txn-${consultantSlug}-${clientSlug}-${shortId}`;
   return name.slice(0, 80);
 }
 
@@ -43,11 +61,15 @@ async function lookupUserByEmail(email: string): Promise<string | null> {
     }
     return null;
   } catch (err) {
+    const { ok, body } = isSlackSuccessBody(err);
+    if (ok && body) {
+      const user = body['user'] as Record<string, unknown> | undefined;
+      return (user?.['id'] as string) ?? null;
+    }
     if (err instanceof ApiError) {
-      const body = err.body as string;
-      if (body.includes('users_not_found')) {
-        return null;
-      }
+      const rawBody = err.body as string;
+      if (rawBody.includes('users_not_found')) return null;
+      console.warn('[slackService] lookupUserByEmail error:', err.statusCode, err.body);
     }
     return null;
   }
@@ -60,18 +82,24 @@ async function createPrivateChannel(name: string): Promise<{ id: string; name: s
     const response = await conversationsApi.conversationsCreate(token, name, true);
     if (response.result && response.result.ok) {
       const channel = (response.result as unknown as Record<string, unknown>).channel as Record<string, unknown> | undefined;
-      if (channel) {
-        return { id: channel.id as string, name: channel.name as string };
-      }
+      if (channel) return { id: channel['id'] as string, name: channel['name'] as string };
     }
     return null;
   } catch (err) {
+    const { ok, body } = isSlackSuccessBody(err);
+    if (ok && body) {
+      const channel = body['channel'] as Record<string, unknown> | undefined;
+      if (channel) return { id: channel['id'] as string, name: channel['name'] as string };
+    }
     if (err instanceof ApiError) {
-      const body = err.body as string;
-      if (body.includes('name_taken')) {
-        return null;
-      }
+      const rawBody = err.body as string;
+      if (rawBody.includes('name_taken')) return null;
       console.error('[slackService] createPrivateChannel error:', err.statusCode, err.body);
+    } else {
+      const e = err as Record<string, unknown>;
+      const rawBody = e['body'] as string | undefined;
+      if (rawBody?.includes('name_taken')) return null;
+      console.error('[slackService] createPrivateChannel error:', e['statusCode'], rawBody);
     }
     return null;
   }
@@ -84,11 +112,14 @@ async function inviteUserToChannel(channelId: string, userId: string): Promise<b
     await conversationsApi.conversationsInvite(token, channelId, userId);
     return true;
   } catch (err) {
-    if (err instanceof ApiError) {
-      const body = err.body as string;
-      if (body.includes('already_in_channel')) return true;
-      console.warn('[slackService] inviteUserToChannel failed:', err.statusCode, err.body);
-    }
+    const { ok } = isSlackSuccessBody(err);
+    if (ok) return true;
+    const rawBody =
+      err instanceof ApiError
+        ? (err.body as string)
+        : ((err as Record<string, unknown>)['body'] as string | undefined) ?? '';
+    if (rawBody.includes('already_in_channel')) return true;
+    console.warn('[slackService] inviteUserToChannel failed:', rawBody);
     return false;
   }
 }
@@ -116,11 +147,11 @@ async function postMessage(
       text                                         // text
     );
   } catch (err) {
-    console.error('[slackService] postMessage error:', err instanceof ApiError ? err.body : err);
+    const { ok } = isSlackSuccessBody(err);
+    if (ok) return; // SDK schema bug but message sent successfully
+    console.error('[slackService] postMessage error:', err instanceof ApiError ? err.body : (err as Error).message);
   }
 }
-
-let _channelSeq = 1;
 
 export const slackService = {
   async ensureTxnChannel(
@@ -129,15 +160,10 @@ export const slackService = {
   ): Promise<TxnChannelResult> {
     const existingChannelId = transactionStore.getChannelId(txn.consultantId, txn.clientEmail);
     if (existingChannelId && txn.channelId) {
-      return {
-        channelId: txn.channelId,
-        channelName: txn.channelName ?? '',
-        clientInvited: false,
-        consultantInvited: false,
-      };
+      return { channelId: txn.channelId, channelName: txn.channelName ?? '', clientInvited: false, consultantInvited: false };
     }
 
-    const channelName = buildChannelName(txn.consultantId, txn.clientEmail, _channelSeq++);
+    const channelName = buildChannelName(txn.consultantId, txn.clientEmail, txn.txnId);
     const created = await createPrivateChannel(channelName);
 
     let channelId: string;
@@ -174,20 +200,13 @@ export const slackService = {
     if (clientUserId) {
       clientInvited = await inviteUserToChannel(channelId, clientUserId);
     } else {
-      console.warn(`[slackService] Client ${txn.clientEmail} not found in workspace — will notify by email via Maxio`);
+      console.warn(`[slackService] Client ${txn.clientEmail} not found — will notify by email via Maxio`);
     }
 
-    await postMessage(
-      channelId,
-      ':wave: Transaction started',
-      buildStartedBlocks(txn)
-    );
+    await postMessage(channelId, ':wave: Transaction started', buildStartedBlocks(txn));
 
     if (!clientInvited) {
-      await postMessage(
-        channelId,
-        ':information_source: Client could not be added to this channel (not a workspace member). They will be notified by email.'
-      );
+      await postMessage(channelId, ':information_source: Client could not be added (not a workspace member). They will be notified by email.');
     }
 
     return { channelId, channelName: resolvedChannelName, clientInvited, consultantInvited };
@@ -212,18 +231,8 @@ export const slackService = {
       const response = await authApi.authTest(token);
       return response.statusCode === 200;
     } catch (err) {
-      // The SDK has a schema bug: Slack returns ok as boolean but SDK expects string.
-      // If status 200 and body contains ok:true, the token is valid — treat as healthy.
-      const e = err as Record<string, unknown>;
-      if (e['statusCode'] === 200) {
-        const body = e['body'] as string | undefined;
-        if (body) {
-          try {
-            const parsed = JSON.parse(body) as Record<string, unknown>;
-            if (parsed['ok'] === true) return true;
-          } catch { /* fall through */ }
-        }
-      }
+      const { ok } = isSlackSuccessBody(err);
+      if (ok) return true;
       if (err instanceof ApiError) {
         console.error('[slack health] ApiError', err.statusCode, err.body);
       } else {
@@ -232,7 +241,13 @@ export const slackService = {
       return false;
     }
   },
+
+  buildUC1ProgressBlocks,
+  buildUC1CompletionBlocks,
+  buildFailureBlocks,
 };
+
+// ─── Block Kit builders ───────────────────────────────────────────────────────
 
 function buildStartedBlocks(txn: Transaction): Record<string, unknown>[] {
   return [
@@ -246,17 +261,67 @@ function buildStartedBlocks(txn: Transaction): Record<string, unknown>[] {
         { type: 'mrkdwn', text: `*Consultant:*\n${txn.consultantId}` },
         { type: 'mrkdwn', text: `*Client:*\n${txn.clientEmail}` },
         { type: 'mrkdwn', text: `*Type:*\n${txn.type}` },
-        { type: 'mrkdwn', text: `*Transaction ID:*\n${txn.txnId}` },
+        { type: 'mrkdwn', text: `*Transaction ID:*\n\`${txn.txnId}\`` },
       ],
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `Started at <!date^${Math.floor(txn.createdAt / 1000)}^{date_short_pretty} {time}|${new Date(txn.createdAt).toISOString()}>` }],
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `Started <!date^${Math.floor(txn.createdAt / 1000)}^{date_short_pretty} {time}|${new Date(txn.createdAt).toISOString()}>`,
+        },
+      ],
     },
   ];
 }
 
-function buildFailureBlocks(ucName: string, errorSummary: string): Record<string, unknown>[] {
+export function buildUC1ProgressBlocks(): Record<string, unknown>[] {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: ':hourglass_flowing_sand: *Creating subscription in Maxio…*' },
+    },
+  ];
+}
+
+export function buildUC1CompletionBlocks(result: SubscriptionResult): Record<string, unknown>[] {
+  const mrrDollars = (Number(result.mrrCents) / 100).toFixed(2);
+  const nextBill = result.nextAssessmentAt
+    ? new Date(result.nextAssessmentAt).toLocaleDateString('en-US', { dateStyle: 'medium' })
+    : 'N/A';
+
+  return [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: ':tada: Subscription active', emoji: true },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Customer:*\n${result.customerName}` },
+        { type: 'mrkdwn', text: `*Email:*\n${result.customerEmail}` },
+        { type: 'mrkdwn', text: `*Plan:*\n${result.productName}` },
+        { type: 'mrkdwn', text: `*MRR:*\n$${mrrDollars}/mo` },
+        { type: 'mrkdwn', text: `*State:*\n${result.state}` },
+        { type: 'mrkdwn', text: `*Next Bill:*\n${nextBill}` },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'View in Maxio', emoji: true },
+          url: result.maxioUrl,
+          style: 'primary',
+        },
+      ],
+    },
+  ];
+}
+
+export function buildFailureBlocks(ucName: string, errorSummary: string): Record<string, unknown>[] {
   return [
     {
       type: 'header',

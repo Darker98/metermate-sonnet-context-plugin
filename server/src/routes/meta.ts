@@ -4,14 +4,10 @@ import { sessionStore } from '../stores/sessionStore';
 import { transactionStore } from '../stores/transactionStore';
 import { slackService } from '../services/slackService';
 import { getMaxioClient } from '../maxioClient';
+import { CONSULTANTS } from '../consultants';
 import { config } from '../config';
 
 export const metaRouter = Router();
-
-const DEMO_CONSULTANTS = [
-  { id: 'c1', name: 'Alice Consultant', email: 'alice@example.com' },
-  { id: 'c2', name: 'Bob Consultant', email: 'bob@example.com' },
-];
 
 metaRouter.get('/health', async (_req, res) => {
   let slackOk = false;
@@ -31,7 +27,7 @@ metaRouter.get('/health', async (_req, res) => {
 });
 
 metaRouter.get('/consultants', (_req, res) => {
-  res.json({ consultants: DEMO_CONSULTANTS });
+  res.json({ consultants: CONSULTANTS });
 });
 
 metaRouter.get('/products', async (_req, res) => {
